@@ -1,0 +1,336 @@
+import { ChangeEvent, useState } from 'react';
+import { AlertCircle, Download, Play, RotateCcw, Sparkles, Upload } from 'lucide-react';
+import { api, Operation } from './api';
+
+type Profile = {
+  metrics: { rows: number; columns: number; missing_cells: number; duplicate_rows: number };
+  columns: { name: string; dtype: string; unique: number; missing: number; suspicious?: string }[];
+};
+type Preview = { columns: string[]; rows: Record<string, unknown>[] };
+type CleaningResult = { before: { completeness: number }; after: { completeness: number; record_retention: number } };
+type Candidate = { candidate_id: string; operation: string; strategy: string; score: number; metrics: { rows: number }; risk: string };
+type Simulation = { formula: string; candidates: Candidate[] };
+type IntentOperation = { name: Operation['name']; columns: string[]; confidence: string; reason: string };
+type ObjectiveOperation = Operation & { confidence: string; source: 'objective'; note: string };
+type PlanResponse = {
+  intent: { operations: IntentOperation[]; unsupported: string[]; assumptions: string[] };
+  objective_operations: ObjectiveOperation[];
+  profile_recommendations: { name: string; reason: string }[];
+  manual_operations: Operation[];
+  validation_errors: string[];
+};
+
+const OPS: Operation[] = [
+  { name: 'missing', params: { strategy: 'median' }, reason: 'Handle missing values' },
+  { name: 'duplicates', reason: 'Remove exact duplicate rows' },
+  { name: 'outliers', params: { strategy: 'flag', method: 'iqr' }, reason: 'Flag statistical outliers' },
+  { name: 'categorical', params: { case_normalize: false }, reason: 'Trim categorical values' },
+  { name: 'scale', params: { strategy: 'standard' }, reason: 'Scale numeric features' },
+];
+
+export default function App() {
+  const [sid, setSid] = useState('');
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [objective, setObjective] = useState('');
+  const [selected, setSelected] = useState<Operation[]>([]);
+  const [message, setMessage] = useState('Upload a dataset to begin.');
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [result, setResult] = useState<CleaningResult | null>(null);
+  const [sim, setSim] = useState<Simulation | null>(null);
+  const [planResult, setPlanResult] = useState<PlanResponse | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [objectiveAdded, setObjectiveAdded] = useState<Set<Operation['name']>>(new Set());
+
+  const upload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setMessage('Uploading and profiling…');
+      const body = new FormData();
+      body.append('file', file);
+      const response = await api.post('/datasets/upload', body);
+      setSid(response.data.session_id);
+      setProfile(response.data.profile);
+      const previewResponse = await api.get('/datasets/' + response.data.session_id + '/preview');
+      setPreview(previewResponse.data);
+      setMessage(file.name + ' is ready for review.');
+      setPlanResult(null);
+      setObjectiveAdded(new Set());
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'Upload failed.');
+    }
+  };
+
+  const plan = async () => {
+    if (!sid) return;
+    setPlanning(true);
+    try {
+      const response = await api.post('/datasets/' + sid + '/plan', { objective, selected_operations: selected });
+      setPlanResult(response.data as PlanResponse);
+      setMessage('Objective interpreted. Review the transparent recommendations below before adding them.');
+    } catch (error: any) {
+      setPlanResult(null);
+      setMessage(error.response?.data?.detail || 'Plan could not be generated.');
+    } finally {
+      setPlanning(false);
+    }
+  };
+
+  const refreshDataset = async () => {
+    const [previewResponse, profileResponse] = await Promise.all([
+      api.get('/datasets/' + sid + '/preview'),
+      api.get('/datasets/' + sid + '/profile'),
+    ]);
+    setPreview(previewResponse.data);
+    setProfile(profileResponse.data);
+  };
+
+  const clean = async () => {
+    try {
+      const response = await api.post('/datasets/' + sid + '/clean', { operations: selected, confirm_destructive: true });
+      setResult(response.data);
+      await refreshDataset();
+      setMessage('Cleaning completed. Original upload is preserved.');
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'Cleaning could not run.');
+    }
+  };
+
+  const simulate = async () => {
+    try {
+      const response = await api.post('/datasets/' + sid + '/simulate', { operations: selected });
+      setSim(response.data);
+      setMessage('Simulation compared isolated copies; nothing has been changed.');
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'No useful simulation candidates for this plan.');
+    }
+  };
+
+  const undoLatest = async () => {
+    try {
+      const historyResponse = await api.get('/datasets/' + sid + '/history');
+      const latest = historyResponse.data[0];
+      if (!latest) {
+        setMessage('There is no operation to undo.');
+        return;
+      }
+      await api.post('/datasets/' + sid + '/undo/' + latest.id);
+      await refreshDataset();
+      setMessage('Restored latest saved snapshot.');
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'Could not restore the snapshot.');
+    }
+  };
+
+  const toggle = (operation: Operation) => {
+    setObjectiveAdded((current) => {
+      const next = new Set(current);
+      next.delete(operation.name);
+      return next;
+    });
+    setSelected((current) => current.some((item) => item.name === operation.name)
+      ? current.filter((item) => item.name !== operation.name)
+      : [...current, operation]);
+  };
+
+  const addObjectiveRecommendations = () => {
+    if (!planResult) return;
+    const additions = planResult.objective_operations.filter(
+      (recommendation) => !selected.some((operation) => operation.name === recommendation.name),
+    );
+    setSelected((current) => [...current, ...additions]);
+    setObjectiveAdded((current) => new Set([...current, ...additions.map((operation) => operation.name)]));
+    setMessage(additions.length
+      ? 'Objective recommendations were added. You can still modify every operation before cleaning.'
+      : 'All objective recommendations are already selected.');
+  };
+
+  return (
+    <main>
+      <aside>
+        <div className="brand"><Sparkles /> DataCleanAI</div>
+        <p>Rule-based data profiling and safe preprocessing.</p>
+        <nav>
+          <a className="active">Dashboard</a>
+          <a>Dataset profile</a>
+          <a>Cleaning history</a>
+        </nav>
+        <small>Local-first · No external AI</small>
+      </aside>
+      <section className="content">
+        <header>
+          <div>
+            <h1>Data cleaning workspace</h1>
+            <p>Profile, review a transparent plan, then choose quick cleaning or simulation.</p>
+          </div>
+          {sid && <span className="pill">Session {sid.slice(0, 8)}</span>}
+        </header>
+        <div className="notice"><AlertCircle size={18} />{message}</div>
+
+        <div className="grid">
+          <article className="card upload">
+            <label htmlFor="file">
+              <Upload />
+              <strong>Upload a dataset</strong>
+              <span>CSV, Excel, or JSON records · max 20 MB</span>
+            </label>
+            <input id="file" type="file" accept=".csv,.xlsx,.xls,.json" onChange={upload} />
+          </article>
+          {profile && (
+            <article className="card stats">
+              <b>{profile.metrics.rows}</b><span>rows</span>
+              <b>{profile.metrics.columns}</b><span>columns</span>
+              <b>{profile.metrics.missing_cells}</b><span>missing cells</span>
+              <b>{profile.metrics.duplicate_rows}</b><span>duplicates</span>
+            </article>
+          )}
+        </div>
+
+        {profile && (
+          <>
+            <article className="card">
+              <h2>Objective</h2>
+              <textarea
+                aria-label="Cleaning objective"
+                value={objective}
+                onChange={(event) => setObjective(event.target.value)}
+                placeholder="e.g. Remove duplicate records, fill missing marks, and identify outliers."
+              />
+              <button onClick={plan} disabled={planning}>
+                <Sparkles size={16} /> {planning ? 'Interpreting…' : 'Interpret and recommend'}
+              </button>
+            </article>
+            {planResult && (
+              <article className="card plan-review">
+                <h2>Objective interpretation</h2>
+                {!objective.trim() && <p>No objective was entered. No objective-based operations were recommended.</p>}
+                {planResult.intent.operations.length > 0 && (
+                  <div className="plan-list">
+                    {planResult.intent.operations.map((item) => (
+                      <div key={item.name}>
+                        <strong>{item.name}</strong> <span className="pill">{item.confidence} confidence</span>
+                        <p>{item.reason} {item.columns.length ? 'Matched columns: ' + item.columns.join(', ') + '.' : 'No column was matched.'}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {planResult.objective_operations.length > 0 && (
+                  <>
+                    <h3>Recommended from your objective</h3>
+                    {planResult.objective_operations.map((item) => (
+                      <div className="recommendation" key={item.name}>
+                        <div><strong>{item.name}</strong><p>{item.reason} {item.note}</p></div>
+                      </div>
+                    ))}
+                    <button onClick={addObjectiveRecommendations}>Add objective recommendations to my selection</button>
+                  </>
+                )}
+                {planResult.profile_recommendations.length > 0 && (
+                  <p className="muted">Dataset profile signals: {planResult.profile_recommendations.map((item) => item.name).join(', ')}. These are informational and are not selected automatically.</p>
+                )}
+                {planResult.intent.assumptions.map((item) => <p className="muted" key={item}>Assumption: {item}</p>)}
+                {planResult.intent.unsupported.map((item) => <p className="warning" key={item}>{item}</p>)}
+                {planResult.validation_errors.map((item) => <p className="warning" key={item}>{item}</p>)}
+              </article>
+            )}
+            <div className="columns">
+              <article className="card">
+                <h2>Operations</h2>
+                {OPS.map((operation) => (
+                  <label className="check" key={operation.name}>
+                    <input
+                      type="checkbox"
+                      checked={selected.some((item) => item.name === operation.name)}
+                      onChange={() => toggle(operation)}
+                    />
+                    <span>
+                      <strong>{operation.reason}</strong>
+                      {selected.some((item) => item.name === operation.name) && (
+                        <small className="source-label">
+                          {objectiveAdded.has(operation.name) ? 'Added from objective recommendation' : 'Manual selection'}
+                        </small>
+                      )}
+                      <small>
+                        {operation.name === 'scale'
+                          ? 'For downstream modelling; opt-in.'
+                          : operation.name === 'outliers'
+                            ? 'Flags only by default; selected flagging adds an _outlier_flag output column.'
+                            : 'Review settings on server defaults.'}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+                <div className="actions">
+                  <button className="primary" disabled={!selected.length} onClick={clean}>
+                    <Play size={16} /> Quick clean
+                  </button>
+                  <button disabled={!selected.length} onClick={simulate}>Compare strategies</button>
+                </div>
+              </article>
+              <article className="card">
+                <h2>Dataset preview</h2>
+                <div className="table">
+                  <table>
+                    <thead><tr>{preview?.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+                    <tbody>
+                      {preview?.rows.map((row, index) => (
+                        <tr key={index}>
+                          {preview.columns.map((column) => <td key={column}>{String(row[column] ?? '')}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <h3>Column profile</h3>
+                {profile.columns.map((column) => (
+                  <div className="column" key={column.name}>
+                    <b>{column.name}</b>
+                    <span>
+                      {column.dtype} · {column.unique} unique · {column.missing} missing
+                      {column.suspicious && (' · ' + column.suspicious)}
+                    </span>
+                  </div>
+                ))}
+              </article>
+            </div>
+          </>
+        )}
+
+        {result && (
+          <article className="card result">
+            <h2>Before / after</h2>
+            <p>Completeness: {result.before.completeness} → {result.after.completeness} · Retention: {result.after.record_retention}</p>
+            <div className="actions">
+              <a href={api.defaults.baseURL + '/datasets/' + sid + '/export/csv'}><Download size={16} /> Cleaned CSV</a>
+              <a href={api.defaults.baseURL + '/datasets/' + sid + '/export/report'}><Download size={16} /> JSON report</a>
+              <button onClick={undoLatest}><RotateCcw size={16} /> Undo latest</button>
+            </div>
+          </article>
+        )}
+
+        {sim && (
+          <article className="card">
+            <h2>Strategy simulator (advisory)</h2>
+            <p>{sim.formula}</p>
+            <div className="table">
+              <table>
+                <thead><tr><th>Operation</th><th>Strategy</th><th>Score</th><th>Rows</th><th>Risk</th></tr></thead>
+                <tbody>
+                  {sim.candidates.map((candidate) => (
+                    <tr key={candidate.candidate_id}>
+                      <td>{candidate.operation}</td>
+                      <td>{candidate.strategy}</td>
+                      <td>{candidate.score}</td>
+                      <td>{candidate.metrics.rows}</td>
+                      <td>{candidate.risk}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        )}
+      </section>
+    </main>
+  );
+}
