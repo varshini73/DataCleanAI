@@ -1,0 +1,529 @@
+{
+  "methodology": "Same 25 independently phrased held-out cases for every method; cosine similarity is not a probability.",
+  "limitations": "Small manually authored fixture; no claim of broad language understanding.",
+  "results": {
+    "rule_baseline": {
+      "case_count": 25,
+      "micro": {
+        "precision": 1.0,
+        "recall": 0.741,
+        "f1": 0.851
+      },
+      "macro_f1": 0.719,
+      "per_intent": {
+        "categorical": {
+          "precision": 0,
+          "recall": 0.0,
+          "f1": 0
+        },
+        "convert": {
+          "precision": 1.0,
+          "recall": 0.667,
+          "f1": 0.8
+        },
+        "duplicates": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "export": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "missing": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "outliers": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "profile": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "scale": {
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.667
+        },
+        "undo": {
+          "precision": 0,
+          "recall": 0.0,
+          "f1": 0
+        }
+      },
+      "exact_match_accuracy": 0.76,
+      "unknown_rejection_accuracy": 1.0
+    },
+    "tfidf_baseline": {
+      "case_count": 25,
+      "micro": {
+        "precision": 0.714,
+        "recall": 0.741,
+        "f1": 0.727
+      },
+      "macro_f1": 0.679,
+      "per_intent": {
+        "categorical": {
+          "precision": 0.5,
+          "recall": 0.25,
+          "f1": 0.333
+        },
+        "convert": {
+          "precision": 0.75,
+          "recall": 1.0,
+          "f1": 0.857
+        },
+        "duplicates": {
+          "precision": 0.5,
+          "recall": 0.8,
+          "f1": 0.615
+        },
+        "export": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "missing": {
+          "precision": 0.8,
+          "recall": 1.0,
+          "f1": 0.889
+        },
+        "outliers": {
+          "precision": 0.75,
+          "recall": 0.75,
+          "f1": 0.75
+        },
+        "profile": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "scale": {
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.667
+        },
+        "undo": {
+          "precision": 0,
+          "recall": 0.0,
+          "f1": 0
+        }
+      },
+      "exact_match_accuracy": 0.56,
+      "unknown_rejection_accuracy": 0.5
+    },
+    "combined_tfidf_rule": {
+      "case_count": 25,
+      "micro": {
+        "precision": 1.0,
+        "recall": 0.741,
+        "f1": 0.851
+      },
+      "macro_f1": 0.719,
+      "per_intent": {
+        "categorical": {
+          "precision": 0,
+          "recall": 0.0,
+          "f1": 0
+        },
+        "convert": {
+          "precision": 1.0,
+          "recall": 0.667,
+          "f1": 0.8
+        },
+        "duplicates": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "export": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "missing": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "outliers": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "profile": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "scale": {
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.667
+        },
+        "undo": {
+          "precision": 0,
+          "recall": 0.0,
+          "f1": 0
+        }
+      },
+      "exact_match_accuracy": 0.76,
+      "unknown_rejection_accuracy": 1.0
+    }
+  },
+  "cases": [
+    {
+      "text": "replace absent grades using the middle value",
+      "expected": [
+        "missing"
+      ],
+      "rule_baseline": [
+        "missing"
+      ],
+      "tfidf_baseline": [
+        "missing"
+      ],
+      "combined_tfidf_rule": [
+        "missing"
+      ]
+    },
+    {
+      "text": "complete empty attendance cells",
+      "expected": [
+        "missing"
+      ],
+      "rule_baseline": [
+        "missing"
+      ],
+      "tfidf_baseline": [
+        "missing"
+      ],
+      "combined_tfidf_rule": [
+        "missing"
+      ]
+    },
+    {
+      "text": "purge repeated enrolments",
+      "expected": [
+        "duplicates"
+      ],
+      "rule_baseline": [
+        "duplicates"
+      ],
+      "tfidf_baseline": [
+        "duplicates"
+      ],
+      "combined_tfidf_rule": [
+        "duplicates"
+      ]
+    },
+    {
+      "text": "show repeated entries but keep all rows",
+      "expected": [
+        "duplicates"
+      ],
+      "rule_baseline": [
+        "duplicates"
+      ],
+      "tfidf_baseline": [
+        "duplicates"
+      ],
+      "combined_tfidf_rule": [
+        "duplicates"
+      ]
+    },
+    {
+      "text": "strip blanks around faculty labels",
+      "expected": [
+        "categorical"
+      ],
+      "rule_baseline": [],
+      "tfidf_baseline": [],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "make course names use consistent letter case",
+      "expected": [
+        "categorical"
+      ],
+      "rule_baseline": [],
+      "tfidf_baseline": [
+        "missing"
+      ],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "find strange attendance measurements",
+      "expected": [
+        "outliers"
+      ],
+      "rule_baseline": [
+        "outliers"
+      ],
+      "tfidf_baseline": [
+        "outliers"
+      ],
+      "combined_tfidf_rule": [
+        "outliers"
+      ]
+    },
+    {
+      "text": "remove extreme scores after review",
+      "expected": [
+        "outliers"
+      ],
+      "rule_baseline": [
+        "outliers"
+      ],
+      "tfidf_baseline": [
+        "duplicates"
+      ],
+      "combined_tfidf_rule": [
+        "outliers"
+      ]
+    },
+    {
+      "text": "turn admission_day into a date",
+      "expected": [
+        "convert"
+      ],
+      "rule_baseline": [
+        "convert"
+      ],
+      "tfidf_baseline": [
+        "convert"
+      ],
+      "combined_tfidf_rule": [
+        "convert"
+      ]
+    },
+    {
+      "text": "make fee values numeric",
+      "expected": [
+        "convert"
+      ],
+      "rule_baseline": [
+        "convert"
+      ],
+      "tfidf_baseline": [
+        "convert"
+      ],
+      "combined_tfidf_rule": [
+        "convert"
+      ]
+    },
+    {
+      "text": "rescale continuous predictors for an ML experiment",
+      "expected": [
+        "scale"
+      ],
+      "rule_baseline": [
+        "scale"
+      ],
+      "tfidf_baseline": [
+        "scale"
+      ],
+      "combined_tfidf_rule": [
+        "scale"
+      ]
+    },
+    {
+      "text": "inspect this table for quality issues",
+      "expected": [
+        "profile"
+      ],
+      "rule_baseline": [
+        "profile"
+      ],
+      "tfidf_baseline": [
+        "profile"
+      ],
+      "combined_tfidf_rule": [
+        "profile"
+      ]
+    },
+    {
+      "text": "save the cleaned table for download",
+      "expected": [
+        "export"
+      ],
+      "rule_baseline": [
+        "export"
+      ],
+      "tfidf_baseline": [
+        "export"
+      ],
+      "combined_tfidf_rule": [
+        "export"
+      ]
+    },
+    {
+      "text": "revert the latest transformation",
+      "expected": [
+        "undo"
+      ],
+      "rule_baseline": [],
+      "tfidf_baseline": [
+        "duplicates"
+      ],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "fill blank Marks and remove repeated student records",
+      "expected": [
+        "duplicates",
+        "missing"
+      ],
+      "rule_baseline": [
+        "duplicates",
+        "missing"
+      ],
+      "tfidf_baseline": [
+        "duplicates",
+        "missing"
+      ],
+      "combined_tfidf_rule": [
+        "duplicates",
+        "missing"
+      ]
+    },
+    {
+      "text": "clean Department labels and flag unusual Attendance_Percent values",
+      "expected": [
+        "categorical",
+        "outliers"
+      ],
+      "rule_baseline": [
+        "outliers"
+      ],
+      "tfidf_baseline": [
+        "categorical",
+        "outliers"
+      ],
+      "combined_tfidf_rule": [
+        "outliers"
+      ]
+    },
+    {
+      "text": "parse Join_Date then normalize exam scores",
+      "expected": [
+        "convert",
+        "scale"
+      ],
+      "rule_baseline": [],
+      "tfidf_baseline": [
+        "categorical",
+        "convert"
+      ],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "do not delete duplicates; only detect them",
+      "expected": [
+        "duplicates"
+      ],
+      "rule_baseline": [
+        "duplicates"
+      ],
+      "tfidf_baseline": [
+        "duplicates",
+        "outliers"
+      ],
+      "combined_tfidf_rule": [
+        "duplicates"
+      ]
+    },
+    {
+      "text": "do not remove anomalous readings, flag them instead",
+      "expected": [
+        "outliers"
+      ],
+      "rule_baseline": [
+        "outliers"
+      ],
+      "tfidf_baseline": [
+        "duplicates",
+        "outliers"
+      ],
+      "combined_tfidf_rule": [
+        "outliers"
+      ]
+    },
+    {
+      "text": "compose a haiku about spreadsheets",
+      "expected": [],
+      "rule_baseline": [],
+      "tfidf_baseline": [],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "forecast next semester grades",
+      "expected": [],
+      "rule_baseline": [],
+      "tfidf_baseline": [],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "colour the dashboard purple",
+      "expected": [],
+      "rule_baseline": [],
+      "tfidf_baseline": [
+        "duplicates"
+      ],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "handle values in the nonexistent column",
+      "expected": [],
+      "rule_baseline": [],
+      "tfidf_baseline": [
+        "convert"
+      ],
+      "combined_tfidf_rule": []
+    },
+    {
+      "text": "median impute marks and tidy department",
+      "expected": [
+        "categorical",
+        "missing"
+      ],
+      "rule_baseline": [
+        "missing"
+      ],
+      "tfidf_baseline": [
+        "missing"
+      ],
+      "combined_tfidf_rule": [
+        "missing"
+      ]
+    },
+    {
+      "text": "dedupe, inspect quality, and export the result",
+      "expected": [
+        "duplicates",
+        "export",
+        "profile"
+      ],
+      "rule_baseline": [
+        "duplicates",
+        "export",
+        "profile"
+      ],
+      "tfidf_baseline": [
+        "export",
+        "profile"
+      ],
+      "combined_tfidf_rule": [
+        "duplicates",
+        "export",
+        "profile"
+      ]
+    }
+  ]
+}

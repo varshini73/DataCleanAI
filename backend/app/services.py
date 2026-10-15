@@ -10,6 +10,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from .config import DATA_DIR, ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES
 from .database import connect
+from .nlp import normalize_text, recognize
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def session_dir(sid: str) -> Path:
@@ -55,28 +56,86 @@ def profile(df: pd.DataFrame) -> dict[str, Any]:
         cols.append({'name': str(c), 'dtype': str(s.dtype), 'unique': int(s.nunique(dropna=True)),
           'missing': int(s.isna().sum()), 'sample_values': [str(v) for v in s.dropna().head(4).tolist()],
           'suspicious': 'leading/trailing whitespace detected' if examples else None,
+          'missing_percentage': round(float(s.isna().mean() * 100), 2),
+          'constant': bool(s.nunique(dropna=False) <= 1),
+          'identifier_like': _is_identifier(str(c), s),
           'statistics': ({k: (None if pd.isna(v) else float(v)) for k,v in s.describe().to_dict().items()} if pd.api.types.is_numeric_dtype(s) else {})})
     return {'metrics': metrics(df), 'columns': cols}
 
 ALIASES={'missing':['missing','null','nan','fill','impute'], 'duplicates':['duplicate','dedupe','repeated'],
  'outliers':['outlier','anomaly','anomalies'], 'convert':['convert','numeric','datetime','date'],
  'categorical':['standardize','standardise','trim','categorical','case'], 'scale':['scale','normaliz','machine learning','ml']}
-def parse_intent(text: str, columns: list[str]) -> dict[str, Any]:
-    low=text.lower(); found=[]
-    for op, words in ALIASES.items():
-        if any(w in low for w in words):
-            matched=[c for c in columns if c.lower() in low]
-            found.append({'name':op,'columns':matched,'confidence':'high' if matched else 'medium',
-              'reason':f'Matched supported {op} vocabulary.'})
-    unsupported=[]
-    assumptions=[]
+
+def _column_tokens(name: str) -> set[str]:
+    return set(re.findall(r'[a-z0-9]+', name.lower()))
+
+def _is_identifier(name: str, series: pd.Series) -> bool:
+    tokens = _column_tokens(name)
+    name_suggests_id = bool(tokens & {'id', 'identifier', 'roll', 'rollno', 'studentid', 'code'})
+    nearly_unique = len(series) > 0 and series.nunique(dropna=True) / len(series) > .9
+    return name_suggests_id or (nearly_unique and ('id' in ''.join(tokens)))
+
+def select_columns_for_intent(name: str, clause: str, df: pd.DataFrame) -> tuple[list[str], str, list[str]]:
+    """Select only type-compatible, evidence-backed columns for one intent."""
+    clause_tokens = set(re.findall(r'[a-z0-9]+', normalize_text(clause)))
+    requested = [
+        c for c in df.columns
+        if str(c).lower() in normalize_text(clause)
+        or (_column_tokens(str(c)) & clause_tokens and not _is_identifier(str(c), df[c]))
+    ]
+    warnings: list[str] = []
+    if requested:
+        candidates = requested
+        reason = 'Explicit column name matched from this operation clause.'
+    elif name == 'missing':
+        candidates = [c for c in df.columns if df[c].isna().any()]
+        reason = 'Selected columns with observed missing values.'
+    elif name == 'categorical':
+        candidates = [c for c in df.columns if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c]) or isinstance(df[c].dtype, pd.CategoricalDtype)]
+        candidates = [c for c in candidates if df[c].astype(str).str.strip().ne(df[c].astype(str)).any()] or candidates
+        reason = 'Selected text/categorical columns; whitespace evidence is preferred.'
+    elif name == 'outliers':
+        candidates = [c for c in df.select_dtypes(include=np.number).columns if not _is_identifier(str(c), df[c])]
+        reason = 'Selected numeric measurement columns and excluded identifier-like columns.'
+    elif name == 'convert':
+        candidates = list(df.columns)
+        reason = 'No target column was named; conversion needs review.'
+    elif name == 'scale':
+        candidates = [c for c in df.select_dtypes(include=np.number).columns if not _is_identifier(str(c), df[c])]
+        reason = 'Selected numeric non-identifier columns.'
+    else:
+        candidates = []
+        reason = 'Full-row operation; no individual column is selected.'
+    if not candidates and name in {'missing', 'outliers', 'categorical', 'scale'}:
+        warnings.append(f'No applicable {name} columns were found; this operation may be unnecessary.')
+    return [str(c) for c in candidates], reason, warnings
+
+def parse_intent(text: str, columns: list[str], df: pd.DataFrame | None = None) -> dict[str, Any]:
+    predictions = recognize(text)
+    found, unsupported, assumptions, warnings = [], [], [], []
+    for prediction in predictions:
+        name = prediction['name']
+        if name in {'profile', 'export', 'undo'}:
+            assumptions.append(f"'{name}' was recognized as a non-cleaning request; use the corresponding dashboard action.")
+            continue
+        if prediction['negated'] and name in {'duplicates', 'outliers'}:
+            assumptions.append(f"'{name}' was recognized as detection-only because the clause includes negation.")
+        if df is not None:
+            matched, column_reason, selection_warnings = select_columns_for_intent(name, prediction['clause'], df)
+            warnings.extend(selection_warnings)
+        else:
+            matched = [c for c in columns if c.lower() in normalize_text(prediction['clause'])]
+            column_reason = 'Matched explicit column names in the operation clause.' if matched else 'No dataset profile was supplied.'
+        confidence = 'high' if prediction['similarity'] >= .45 else 'medium' if prediction['similarity'] >= .20 else 'rule-supported'
+        found.append({'name':name, 'columns':matched, 'confidence':confidence, 'similarity':prediction['similarity'],
+            'matched_example':prediction['matched_example'], 'clause':prediction['clause'], 'negated':prediction['negated'],
+            'reason':f"{prediction['recognition']} matched '{prediction['matched_example']}'.", 'column_reason':column_reason})
     if not text.strip():
         assumptions.append('No objective was supplied, so no objective-based operations were recommended.')
-    elif not found:
-        unsupported.append('No supported preprocessing request was recognized. Use terms such as missing, duplicate, outlier, convert, standardize, or scale.')
-    if any(not x['columns'] for x in found):
-        assumptions.append('No column was identified for one or more operations; the operation will use its safe applicable defaults unless you choose columns.')
-    return {'operations':found,'unsupported':unsupported,'assumptions':assumptions}
+    elif not found and not assumptions:
+        unsupported.append('The request could not be interpreted reliably. Rephrase with supported terms such as fill missing values, remove duplicates, standardize categories, or flag outliers.')
+    return {'original_instruction':text, 'normalized_instruction':normalize_text(text), 'operations':found,
+            'unsupported':unsupported, 'assumptions':assumptions, 'warnings':list(dict.fromkeys(warnings))}
 
 DEFAULT_OPERATION_PARAMS = {
     'missing': {'strategy': 'median'},
@@ -93,29 +152,44 @@ def objective_recommendations(intent: dict[str, Any], df: pd.DataFrame) -> list[
     for requested in intent['operations']:
         name = requested['name']
         columns = requested['columns']
-        applicable_columns = columns or list(df.columns)
+        if requested.get('negated') and name == 'duplicates':
+            continue
+        params = DEFAULT_OPERATION_PARAMS[name].copy()
+        clause = requested.get('clause', '')
+        if name == 'missing':
+            if 'mean' in clause: params['strategy'] = 'mean'
+            elif 'mode' in clause: params['strategy'] = 'mode'
+            elif 'drop' in clause or 'remove rows' in clause: params['strategy'] = 'drop_rows'
+        if name == 'outliers':
+            if 'remove' in clause: params.update({'strategy':'remove', 'approved':False})
+            elif 'cap' in clause: params['strategy'] = 'cap'
+            else: params['strategy'] = 'flag'
         proposals.append({
             'name': name,
             'columns': columns,
-            'params': DEFAULT_OPERATION_PARAMS[name].copy(),
+            'params': params,
             'reason': requested['reason'],
-            'confidence': requested['confidence'],
+            'confidence': requested['confidence'], 'similarity': requested.get('similarity', 0),
+            'matched_example': requested.get('matched_example', ''), 'column_reason': requested.get('column_reason', ''),
             'source': 'objective',
             'note': (
                 'Flagging adds a boolean _outlier_flag column to the cleaned dataset, export, and preview; it does not remove records.'
                 if name == 'outliers' else
-                'No column was named; review the operation before execution.' if not columns else
-                'Columns matched from the objective: ' + ', '.join(applicable_columns)
+                'No applicable columns were found; this proposal should not be applied without selecting a target.' if not columns and name not in {'duplicates'} else
+                'Columns selected from dataset evidence: ' + ', '.join(columns)
             ),
         })
     return proposals
 
 def recommendations(df: pd.DataFrame) -> list[dict]:
     out=[]
-    if df.isna().any().any(): out.append({'name':'missing','reason':'Dataset contains missing cells.'})
+    missing=[str(c) for c in df.columns if df[c].isna().any()]
+    if missing: out.append({'name':'missing','columns':missing,'reason':'Observed missing cells in: '+', '.join(missing)+'.'})
     if df.duplicated().any(): out.append({'name':'duplicates','reason':'Dataset contains duplicate records.'})
-    if any(df[c].dtype == object and df[c].astype(str).str.strip().ne(df[c].astype(str)).any() for c in df.columns): out.append({'name':'categorical','reason':'Text values contain surrounding whitespace.'})
-    if df.select_dtypes(include=np.number).shape[1]: out.append({'name':'outliers','reason':'Numerical columns can be inspected for statistical outliers.'})
+    whitespace=[str(c) for c in df.columns if (pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c])) and df[c].astype(str).str.strip().ne(df[c].astype(str)).any()]
+    if whitespace: out.append({'name':'categorical','columns':whitespace,'reason':'Whitespace inconsistency detected in: '+', '.join(whitespace)+'.'})
+    numeric=[str(c) for c in df.select_dtypes(include=np.number).columns if not _is_identifier(str(c), df[c])]
+    if numeric: out.append({'name':'outliers','columns':numeric,'reason':'Numeric non-identifier columns are available for IQR outlier inspection.'})
     return out
 
 def validate_operations(df: pd.DataFrame, operations: list[dict]) -> list[str]:
@@ -123,7 +197,15 @@ def validate_operations(df: pd.DataFrame, operations: list[dict]) -> list[str]:
     for op in operations:
         if op['name'] not in allowed: errors.append('Operation is not allowed.')
         if any(c not in df.columns for c in op.get('columns', [])): errors.append(f"Unknown column in {op['name']}.")
-        if op['name']=='outliers' and op.get('params',{}).get('strategy','flag')=='remove' and not op.get('params',{}).get('approved',False): errors.append('Outlier removal requires approved=true.')
+        params=op.get('params',{})
+        if op['name']=='missing' and params.get('strategy','leave') not in {'leave','drop_rows','mean','median','mode'}:
+            errors.append('Unsupported missing-value strategy.')
+        if op['name']=='outliers':
+            if params.get('strategy','flag') not in {'flag','remove','cap'}: errors.append('Unsupported outlier strategy.')
+            if params.get('method','iqr') not in {'iqr','zscore'}: errors.append('Unsupported outlier method.')
+            if params.get('strategy','flag')=='remove' and not params.get('approved',False): errors.append('Outlier removal requires approved=true.')
+        if op['name']=='convert' and params.get('kind','numeric') not in {'numeric','datetime','category'}: errors.append('Unsupported conversion kind.')
+        if op['name']=='scale' and params.get('strategy','standard') not in {'standard','minmax'}: errors.append('Unsupported scaling strategy.')
     return errors
 
 def changed_cell_count(before: pd.DataFrame, after: pd.DataFrame) -> int:

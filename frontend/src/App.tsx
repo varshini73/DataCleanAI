@@ -10,10 +10,10 @@ type Preview = { columns: string[]; rows: Record<string, unknown>[] };
 type CleaningResult = { before: { completeness: number }; after: { completeness: number; record_retention: number } };
 type Candidate = { candidate_id: string; operation: string; strategy: string; score: number; metrics: { rows: number }; risk: string };
 type Simulation = { formula: string; candidates: Candidate[] };
-type IntentOperation = { name: Operation['name']; columns: string[]; confidence: string; reason: string };
-type ObjectiveOperation = Operation & { confidence: string; source: 'objective'; note: string };
+type IntentOperation = { name: Operation['name']; columns: string[]; confidence: string; reason: string; similarity?: number; matched_example?: string; column_reason?: string; negated?: boolean };
+type ObjectiveOperation = Operation & { confidence: string; source: 'objective'; note: string; similarity?: number; matched_example?: string; column_reason?: string };
 type PlanResponse = {
-  intent: { operations: IntentOperation[]; unsupported: string[]; assumptions: string[] };
+  intent: { operations: IntentOperation[]; unsupported: string[]; assumptions: string[]; warnings?: string[]; normalized_instruction?: string };
   objective_operations: ObjectiveOperation[];
   profile_recommendations: { name: string; reason: string }[];
   manual_operations: Operation[];
@@ -40,6 +40,7 @@ export default function App() {
   const [planResult, setPlanResult] = useState<PlanResponse | null>(null);
   const [planning, setPlanning] = useState(false);
   const [objectiveAdded, setObjectiveAdded] = useState<Set<Operation['name']>>(new Set());
+  const [planApproved, setPlanApproved] = useState(false);
 
   const upload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -56,6 +57,7 @@ export default function App() {
       setMessage(file.name + ' is ready for review.');
       setPlanResult(null);
       setObjectiveAdded(new Set());
+      setPlanApproved(false);
     } catch (error: any) {
       setMessage(error.response?.data?.detail || 'Upload failed.');
     }
@@ -67,6 +69,7 @@ export default function App() {
     try {
       const response = await api.post('/datasets/' + sid + '/plan', { objective, selected_operations: selected });
       setPlanResult(response.data as PlanResponse);
+      setPlanApproved(false);
       setMessage('Objective interpreted. Review the transparent recommendations below before adding them.');
     } catch (error: any) {
       setPlanResult(null);
@@ -86,8 +89,16 @@ export default function App() {
   };
 
   const clean = async () => {
+    if (!planApproved) {
+      setMessage('Review the plan and confirm approval before running cleaning.');
+      return;
+    }
     try {
-      const response = await api.post('/datasets/' + sid + '/clean', { operations: selected, confirm_destructive: true });
+      const approvedOperations = selected.map((operation) => operation.name === 'outliers'
+        && operation.params?.strategy === 'remove'
+        ? { ...operation, params: { ...operation.params, approved: true } }
+        : operation);
+      const response = await api.post('/datasets/' + sid + '/clean', { operations: approvedOperations, confirm_destructive: true });
       setResult(response.data);
       await refreshDataset();
       setMessage('Cleaning completed. Original upload is preserved.');
@@ -133,6 +144,13 @@ export default function App() {
       : [...current, operation]);
   };
 
+  const updateOperation = (name: Operation['name'], update: Partial<Operation>) => {
+    setSelected((current) => current.map((operation) => operation.name === name
+      ? { ...operation, ...update, params: { ...operation.params, ...update.params } }
+      : operation));
+    setPlanApproved(false);
+  };
+
   const addObjectiveRecommendations = () => {
     if (!planResult) return;
     const additions = planResult.objective_operations.filter(
@@ -143,6 +161,7 @@ export default function App() {
     setMessage(additions.length
       ? 'Objective recommendations were added. You can still modify every operation before cleaning.'
       : 'All objective recommendations are already selected.');
+    setPlanApproved(false);
   };
 
   return (
@@ -210,6 +229,7 @@ export default function App() {
                       <div key={item.name}>
                         <strong>{item.name}</strong> <span className="pill">{item.confidence} confidence</span>
                         <p>{item.reason} {item.columns.length ? 'Matched columns: ' + item.columns.join(', ') + '.' : 'No column was matched.'}</p>
+                        <p className="muted">TF-IDF similarity: {item.similarity ?? 0}; closest catalog example: “{item.matched_example}”. {item.column_reason}</p>
                       </div>
                     ))}
                   </div>
@@ -219,7 +239,7 @@ export default function App() {
                     <h3>Recommended from your objective</h3>
                     {planResult.objective_operations.map((item) => (
                       <div className="recommendation" key={item.name}>
-                        <div><strong>{item.name}</strong><p>{item.reason} {item.note}</p></div>
+                        <div><strong>{item.name}</strong><p>{item.reason} {item.note}</p><p className="muted">{item.column_reason}</p></div>
                       </div>
                     ))}
                     <button onClick={addObjectiveRecommendations}>Add objective recommendations to my selection</button>
@@ -229,6 +249,7 @@ export default function App() {
                   <p className="muted">Dataset profile signals: {planResult.profile_recommendations.map((item) => item.name).join(', ')}. These are informational and are not selected automatically.</p>
                 )}
                 {planResult.intent.assumptions.map((item) => <p className="muted" key={item}>Assumption: {item}</p>)}
+                {(planResult.intent.warnings || []).map((item) => <p className="warning" key={item}>{item}</p>)}
                 {planResult.intent.unsupported.map((item) => <p className="warning" key={item}>{item}</p>)}
                 {planResult.validation_errors.map((item) => <p className="warning" key={item}>{item}</p>)}
               </article>
@@ -257,11 +278,44 @@ export default function App() {
                             ? 'Flags only by default; selected flagging adds an _outlier_flag output column.'
                             : 'Review settings on server defaults.'}
                       </small>
+                      {selected.some((item) => item.name === operation.name) && (
+                        <span className="operation-editor">
+                          <label>
+                            Columns
+                            <select
+                              value={(selected.find((item) => item.name === operation.name)?.columns || []).join(',')}
+                              onChange={(event) => updateOperation(operation.name, {
+                                columns: event.target.value ? event.target.value.split(',') : [],
+                              })}
+                            >
+                              <option value="">Automatic / full-row</option>
+                              {profile.columns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+                            </select>
+                          </label>
+                          {operation.name === 'missing' && (
+                            <label>Strategy
+                              <select value={String(selected.find((item) => item.name === operation.name)?.params?.strategy || 'median')}
+                                onChange={(event) => updateOperation(operation.name, { params: { strategy: event.target.value } })}>
+                                <option value="median">Median</option><option value="mean">Mean</option><option value="mode">Mode</option><option value="drop_rows">Drop rows</option><option value="leave">Leave unchanged</option>
+                              </select>
+                            </label>
+                          )}
+                          {operation.name === 'outliers' && (
+                            <label>Strategy
+                              <select value={String(selected.find((item) => item.name === operation.name)?.params?.strategy || 'flag')}
+                                onChange={(event) => updateOperation(operation.name, { params: { strategy: event.target.value } })}>
+                                <option value="flag">Flag only</option><option value="cap">Cap extremes</option><option value="remove">Remove (requires review)</option>
+                              </select>
+                            </label>
+                          )}
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}
                 <div className="actions">
-                  <button className="primary" disabled={!selected.length} onClick={clean}>
+                  <label className="approval"><input type="checkbox" checked={planApproved} onChange={(event) => setPlanApproved(event.target.checked)} /> I approve this reviewed plan</label>
+                  <button className="primary" disabled={!selected.length || !planApproved} onClick={clean}>
                     <Play size={16} /> Quick clean
                   </button>
                   <button disabled={!selected.length} onClick={simulate}>Compare strategies</button>

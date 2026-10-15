@@ -34,3 +34,27 @@ def test_intent_parser_explains_empty_and_unsupported_objectives():
     unsupported=parse_intent('Predict student grades perfectly', ['marks'])
     assert empty['operations'] == [] and empty['assumptions']
     assert unsupported['operations'] == [] and unsupported['unsupported']
+
+def test_dataset_aware_multi_intent_does_not_assign_marks_to_every_operation():
+    df=pd.DataFrame({
+        'Student_ID':[101, 102, 103, 104],
+        'Marks':[50, None, 70, 80],
+        'Department':[' CS ', 'CS', 'Math', 'Math'],
+        'Attendance_Percent':[90, 91, 89, 10],
+    })
+    parsed=parse_intent(
+        'Fill missing marks, standardize department names, and identify attendance outliers.',
+        list(df.columns), df,
+    )
+    operations={item['name']: item for item in parsed['operations']}
+    assert operations['missing']['columns'] == ['Marks']
+    assert operations['categorical']['columns'] == ['Department']
+    assert operations['outliers']['columns'] == ['Attendance_Percent']
+    assert 'Student_ID' not in operations['outliers']['columns']
+
+def test_negated_duplicate_request_is_not_an_executable_removal():
+    df=pd.DataFrame({'Marks':[1, 1]})
+    parsed=parse_intent('Do not remove duplicates; only show them.', list(df.columns), df)
+    assert parsed['operations'][0]['name'] == 'duplicates'
+    assert parsed['operations'][0]['negated'] is True
+    assert objective_recommendations(parsed, df) == []

@@ -28,7 +28,7 @@ def preview(sid:str,page:int=1,page_size:int=20):
 @app.post('/api/datasets/{sid}/plan')
 def plan(sid:str, request:PlanRequest):
     df=fail(lambda:read_df(Path(get_session(sid)['working_path'])))
-    parsed=parse_intent(request.objective,list(df.columns))
+    parsed=parse_intent(request.objective,list(df.columns), df)
     objective_ops=objective_recommendations(parsed, df)
     profile_ops=recommendations(df)
     manual_ops=[o.model_dump() for o in request.selected_operations]
@@ -49,7 +49,10 @@ def clean(sid:str, request:ExecuteRequest):
     if destructive and not request.confirm_destructive: raise HTTPException(400,'Destructive plan requires confirmation.')
     after,logs=apply_operations(before,ops); save_df(after,Path(info['working_path']))
     for log,op in zip(logs,ops): record_history(sid,log['operation'],log['parameters'],op.get('reason','User-selected operation'),before,after,log['affected_rows'],log['affected_cells'])
-    return {'before':metrics(before),'after':metrics(after,len(before)),'log':logs,'warnings':['Statistical outliers are not necessarily errors.'] if any(o['name']=='outliers' for o in ops) else []}
+    warnings=[]
+    if any(o['name']=='outliers' and o.get('params',{}).get('strategy','flag')=='flag' for o in ops):
+        warnings.append('Outlier flagging adds _outlier_flag; statistical outliers are not necessarily errors.')
+    return {'before':metrics(before),'after':metrics(after,len(before)),'log':logs,'warnings':warnings}
 @app.post('/api/datasets/{sid}/simulate')
 def simulate(sid:str,request:SimulationRequest):
     info=fail(lambda:get_session(sid)); original=read_df(Path(info['working_path'])); candidates=[]
@@ -74,7 +77,12 @@ def undo(sid:str,history_id:int):
 @app.get('/api/datasets/{sid}/export/{kind}')
 def export(sid:str,kind:str):
     info=fail(lambda:get_session(sid)); df=read_df(Path(info['working_path']))
-    if kind=='csv': return Response(df.to_csv(index=False),media_type='text/csv',headers={'Content-Disposition':'attachment; filename=cleaned.csv'})
+    if kind=='csv':
+        # Prefix formula-like spreadsheet values while retaining their visible text.
+        safe=df.copy()
+        for col in safe.select_dtypes(include=['object', 'string']).columns:
+            safe[col]=safe[col].map(lambda value: "'" + value if isinstance(value, str) and value[:1] in ('=', '+', '-', '@') else value)
+        return Response(safe.to_csv(index=False),media_type='text/csv',headers={'Content-Disposition':'attachment; filename=cleaned.csv'})
     if kind=='xlsx':
         out=io.BytesIO(); df.to_excel(out,index=False); return Response(out.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':'attachment; filename=cleaned.xlsx'})
     if kind=='report': return Response(json.dumps({'session_id':sid,'metrics':metrics(df),'history':history(sid)},default=str,indent=2),media_type='application/json',headers={'Content-Disposition':'attachment; filename=cleaning-report.json'})
