@@ -61,3 +61,30 @@ def test_csv_export_escapes_formula_values():
         assert upload.status_code == 200
         response=client.get(f'/api/datasets/{upload.json()["session_id"]}/export/csv')
         assert "'=SUM(1,1)" in response.text
+
+def test_simulator_score_is_recomputed_from_each_candidate_metrics():
+    with TestClient(app) as client:
+        upload=client.post('/api/datasets/upload',files={'file':('values.csv',b'value\n1\n2\n100\n','text/csv')})
+        sid=upload.json()['session_id']
+        response=client.post(f'/api/datasets/{sid}/simulate',json={'operations':[{'name':'outliers','columns':['value'],'params':{'strategy':'flag'}}]})
+        assert response.status_code == 200
+        for candidate in response.json()['candidates']:
+            metrics=candidate['metrics']
+            expected=round(.45*metrics['completeness']+.25*metrics['record_retention']+.15*metrics['uniqueness']+.15*(1-min(candidate['affected_cells']/3,1)),4)
+            assert candidate['score'] == expected
+
+def test_profile_and_history_endpoints_reflect_current_session_state():
+    with TestClient(app) as client:
+        uploaded=client.post('/api/datasets/upload',files={'file':('people.csv',b'name,marks\nAda,10\nAda,10\n','text/csv')})
+        sid=uploaded.json()['session_id']
+        profile=client.get(f'/api/datasets/{sid}/profile')
+        assert profile.status_code == 200
+        assert profile.json()['metrics']['duplicate_rows'] == 1
+        assert client.get(f'/api/datasets/{sid}/history').json() == []
+        clean=client.post(f'/api/datasets/{sid}/clean',json={'operations':[{'name':'duplicates','reason':'Remove repeated row'}],'confirm_destructive':True})
+        assert clean.status_code == 200
+        history=client.get(f'/api/datasets/{sid}/history').json()
+        assert len(history) == 1
+        assert history[0]['operation'] == 'duplicates'
+        assert history[0]['reason'] == 'Remove repeated row'
+        assert history[0]['affected_rows'] == 1

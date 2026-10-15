@@ -33,7 +33,7 @@ def plan(sid:str, request:PlanRequest):
     profile_ops=recommendations(df)
     manual_ops=[o.model_dump() for o in request.selected_operations]
     if request.all_applicable and not manual_ops:
-        manual_ops=[{'name':r['name'], 'reason':r['reason']} for r in profile_ops]
+        manual_ops=[{'name':r['name'], 'reason':r['reason']} for r in profile_ops if r['name'] in ALIASES]
     return {
         'intent': parsed,
         'objective_operations': objective_ops,
@@ -63,9 +63,18 @@ def simulate(sid:str,request:SimulationRequest):
         else: continue
         for v in variants:
             x={**op,'params':{**op.get('params',{}),'strategy':v,'case_normalize':v=='lower'}}; result,log=apply_operations(original,[x]); m=metrics(result,len(original)); score=round(.45*m['completeness']+.25*m['record_retention']+.15*m['uniqueness']+.15*(1-min(log[0]['affected_cells']/max(original.size,1),1)),4)
-            candidates.append({'candidate_id':str(uuid.uuid4()),'operation':op['name'],'strategy':v,'metrics':m,'score':score,'risk':'May remove records or alter values; review before applying.' if v in ('remove','drop_rows','cap') else 'Non-destructive or reversible via undo.','operation_data':x})
+            candidates.append({'candidate_id':str(uuid.uuid4()),'operation':op['name'],'strategy':v,'metrics':m,'score':score,
+              'affected_cells':log[0]['affected_cells'],'affected_rows':log[0]['affected_rows'],
+              'risk':'May remove records or alter values; review before applying.' if v in ('remove','drop_rows','cap') else 'Non-destructive or reversible via undo.','operation_data':x})
     if not candidates: raise HTTPException(400,'No meaningful strategy comparison for the selected operations.')
-    return {'formula':'0.45 completeness + 0.25 retention + 0.15 uniqueness + 0.15 changed-cell preservation','candidates':candidates}
+    grouped={}
+    for candidate in candidates: grouped.setdefault(candidate['operation'],[]).append(candidate['score'])
+    notes=[]
+    for operation,scores in grouped.items():
+        if max(scores)-min(scores) <= .01:
+            notes.append(f'{operation}: candidate scores are tied or differ by 0.01 or less; use risk and retention rather than score alone.')
+    return {'formula':'0.45 completeness + 0.25 retention + 0.15 uniqueness + 0.15 changed-cell preservation',
+      'candidates':candidates, 'comparison_notes':notes}
 @app.get('/api/datasets/{sid}/history')
 def get_history(sid:str): return fail(lambda:history(sid))
 @app.post('/api/datasets/{sid}/undo/{history_id}')

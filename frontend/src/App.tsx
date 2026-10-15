@@ -5,11 +5,17 @@ import { api, Operation } from './api';
 type Profile = {
   metrics: { rows: number; columns: number; missing_cells: number; duplicate_rows: number };
   columns: { name: string; dtype: string; unique: number; missing: number; suspicious?: string }[];
+  range_violations?: { column: string; invalid_count: number; min: number; max: number; rule: string }[];
 };
 type Preview = { columns: string[]; rows: Record<string, unknown>[] };
 type CleaningResult = { before: { completeness: number }; after: { completeness: number; record_retention: number } };
 type Candidate = { candidate_id: string; operation: string; strategy: string; score: number; metrics: { rows: number }; risk: string };
-type Simulation = { formula: string; candidates: Candidate[] };
+type Simulation = { formula: string; candidates: Candidate[]; comparison_notes?: string[] };
+type View = 'dashboard' | 'profile' | 'history';
+type HistoryEntry = {
+  id: number; created_at: string; operation: string; parameters: string; status: string; reason: string;
+  affected_rows: number; affected_cells: number;
+};
 type IntentOperation = { name: Operation['name']; columns: string[]; confidence: string; reason: string; similarity?: number; matched_example?: string; column_reason?: string; negated?: boolean };
 type ObjectiveOperation = Operation & { confidence: string; source: 'objective'; note: string; similarity?: number; matched_example?: string; column_reason?: string };
 type PlanResponse = {
@@ -41,6 +47,12 @@ export default function App() {
   const [planning, setPlanning] = useState(false);
   const [objectiveAdded, setObjectiveAdded] = useState<Set<Operation['name']>>(new Set());
   const [planApproved, setPlanApproved] = useState(false);
+  const [view, setView] = useState<View>('dashboard');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
 
   const upload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -58,6 +70,8 @@ export default function App() {
       setPlanResult(null);
       setObjectiveAdded(new Set());
       setPlanApproved(false);
+      setHistory([]);
+      setView('dashboard');
     } catch (error: any) {
       setMessage(error.response?.data?.detail || 'Upload failed.');
     }
@@ -86,6 +100,39 @@ export default function App() {
     ]);
     setPreview(previewResponse.data);
     setProfile(profileResponse.data);
+  };
+
+  const loadProfile = async () => {
+    if (!sid) return;
+    setProfileLoading(true);
+    setProfileError('');
+    try {
+      await refreshDataset();
+    } catch (error: any) {
+      setProfileError(error.response?.data?.detail || 'Could not refresh the dataset profile.');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const loadHistory = async () => {
+    if (!sid) return;
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const response = await api.get('/datasets/' + sid + '/history');
+      setHistory(response.data);
+    } catch (error: any) {
+      setHistoryError(error.response?.data?.detail || 'Could not load cleaning history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const navigate = async (nextView: View) => {
+    setView(nextView);
+    if (nextView === 'profile') await loadProfile();
+    if (nextView === 'history') await loadHistory();
   };
 
   const clean = async () => {
@@ -133,6 +180,18 @@ export default function App() {
     }
   };
 
+  const undoHistoryEntry = async (historyId: number) => {
+    try {
+      await api.post('/datasets/' + sid + '/undo/' + historyId);
+      await refreshDataset();
+      await loadHistory();
+      setResult(null);
+      setMessage('Restored the selected saved snapshot.');
+    } catch (error: any) {
+      setMessage(error.response?.data?.detail || 'Could not restore the selected snapshot.');
+    }
+  };
+
   const toggle = (operation: Operation) => {
     setObjectiveAdded((current) => {
       const next = new Set(current);
@@ -170,9 +229,9 @@ export default function App() {
         <div className="brand"><Sparkles /> DataCleanAI</div>
         <p>Rule-based data profiling and safe preprocessing.</p>
         <nav>
-          <a className="active">Dashboard</a>
-          <a>Dataset profile</a>
-          <a>Cleaning history</a>
+          <button className={view === 'dashboard' ? 'active' : ''} onClick={() => navigate('dashboard')}>Dashboard</button>
+          <button className={view === 'profile' ? 'active' : ''} onClick={() => navigate('profile')}>Dataset profile</button>
+          <button className={view === 'history' ? 'active' : ''} onClick={() => navigate('history')}>Cleaning history</button>
         </nav>
         <small>Local-first · No external AI</small>
       </aside>
@@ -186,7 +245,7 @@ export default function App() {
         </header>
         <div className="notice"><AlertCircle size={18} />{message}</div>
 
-        <div className="grid">
+        {view === 'dashboard' ? <><div className="grid">
           <article className="card upload">
             <label htmlFor="file">
               <Upload />
@@ -227,9 +286,9 @@ export default function App() {
                   <div className="plan-list">
                     {planResult.intent.operations.map((item) => (
                       <div key={item.name}>
-                        <strong>{item.name}</strong> <span className="pill">{item.confidence} confidence</span>
+                        <strong>{item.name}</strong> <span className="pill">{item.confidence}</span>
                         <p>{item.reason} {item.columns.length ? 'Matched columns: ' + item.columns.join(', ') + '.' : 'No column was matched.'}</p>
-                        <p className="muted">TF-IDF similarity: {item.similarity ?? 0}; closest catalog example: “{item.matched_example}”. {item.column_reason}</p>
+                        <p className="muted">Lexical cosine similarity: {item.similarity ?? 0} (not a probability); closest catalog example: “{item.matched_example}”. {item.column_reason}</p>
                       </div>
                     ))}
                   </div>
@@ -345,6 +404,11 @@ export default function App() {
                     </span>
                   </div>
                 ))}
+                {(profile.range_violations || []).map((finding) => (
+                  <p className="warning" key={finding.column}>
+                    Range validation: {finding.column} has {finding.invalid_count} value(s) outside 0–100 ({finding.min} to {finding.max}). No values were changed.
+                  </p>
+                ))}
               </article>
             </div>
           </>
@@ -366,6 +430,7 @@ export default function App() {
           <article className="card">
             <h2>Strategy simulator (advisory)</h2>
             <p>{sim.formula}</p>
+            {(sim.comparison_notes || []).map((note) => <p className="warning" key={note}>{note}</p>)}
             <div className="table">
               <table>
                 <thead><tr><th>Operation</th><th>Strategy</th><th>Score</th><th>Rows</th><th>Risk</th></tr></thead>
@@ -383,6 +448,45 @@ export default function App() {
               </table>
             </div>
           </article>
+        )}</> : view === 'profile' ? (
+          <section className="view-page">
+            <h2>Dataset profile</h2>
+            {!sid && <div className="card empty-state">Upload a dataset to view its real profile.</div>}
+            {sid && profileLoading && <div className="card">Refreshing profile…</div>}
+            {sid && profileError && <div className="card warning">{profileError}</div>}
+            {sid && profile && !profileLoading && (
+              <>
+                <div className="card stats profile-stats">
+                  <b>{profile.metrics.rows}</b><span>rows</span><b>{profile.metrics.columns}</b><span>columns</span>
+                  <b>{profile.metrics.missing_cells}</b><span>missing cells</span><b>{profile.metrics.duplicate_rows}</b><span>duplicate rows</span>
+                </div>
+                <article className="card">
+                  <h3>Columns and quality indicators</h3>
+                  <div className="table"><table><thead><tr><th>Column</th><th>Type</th><th>Unique</th><th>Missing</th><th>Indicator</th></tr></thead>
+                    <tbody>{profile.columns.map((column) => <tr key={column.name}><td>{column.name}</td><td>{column.dtype}</td><td>{column.unique}</td><td>{column.missing}</td><td>{column.suspicious || '—'}</td></tr>)}</tbody>
+                  </table></div>
+                  {(profile.range_violations || []).map((finding) => <p className="warning" key={finding.column}>Range validation: {finding.rule} {finding.column}: {finding.invalid_count} violation(s).</p>)}
+                </article>
+                <article className="card"><h3>Current preview</h3><div className="table"><table><thead><tr>{preview?.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{preview?.rows.map((row, index) => <tr key={index}>{preview.columns.map((column) => <td key={column}>{String(row[column] ?? '')}</td>)}</tr>)}</tbody></table></div></article>
+              </>
+            )}
+          </section>
+        ) : (
+          <section className="view-page">
+            <h2>Cleaning history</h2>
+            {!sid && <div className="card empty-state">Upload a dataset to view its cleaning history.</div>}
+            {sid && historyLoading && <div className="card">Loading persisted history…</div>}
+            {sid && historyError && <div className="card warning">{historyError}</div>}
+            {sid && !historyLoading && !historyError && history.length === 0 && <div className="card empty-state">No cleaning operations have been completed for this dataset.</div>}
+            {sid && !historyLoading && history.map((entry) => (
+              <article className="card history-entry" key={entry.id}>
+                <div><h3>{entry.operation}</h3><p>{entry.reason || 'No reason recorded.'}</p><small>{new Date(entry.created_at).toLocaleString()} · {entry.status}</small></div>
+                <p>{entry.affected_cells} changed cells · {entry.affected_rows} affected rows</p>
+                <details><summary>Parameters</summary><pre>{entry.parameters}</pre></details>
+                <button onClick={() => undoHistoryEntry(entry.id)}><RotateCcw size={16} /> Restore this snapshot</button>
+              </article>
+            ))}
+          </section>
         )}
       </section>
     </main>

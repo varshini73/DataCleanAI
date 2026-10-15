@@ -60,7 +60,8 @@ def profile(df: pd.DataFrame) -> dict[str, Any]:
           'constant': bool(s.nunique(dropna=False) <= 1),
           'identifier_like': _is_identifier(str(c), s),
           'statistics': ({k: (None if pd.isna(v) else float(v)) for k,v in s.describe().to_dict().items()} if pd.api.types.is_numeric_dtype(s) else {})})
-    return {'metrics': metrics(df), 'columns': cols}
+    ranges = percentage_range_violations(df)
+    return {'metrics': metrics(df), 'columns': cols, 'range_violations': ranges}
 
 ALIASES={'missing':['missing','null','nan','fill','impute'], 'duplicates':['duplicate','dedupe','repeated'],
  'outliers':['outlier','anomaly','anomalies'], 'convert':['convert','numeric','datetime','date'],
@@ -75,14 +76,37 @@ def _is_identifier(name: str, series: pd.Series) -> bool:
     nearly_unique = len(series) > 0 and series.nunique(dropna=True) / len(series) > .9
     return name_suggests_id or (nearly_unique and ('id' in ''.join(tokens)))
 
+def percentage_range_violations(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Report, never alter, values outside the normal 0–100 percentage domain."""
+    findings=[]
+    for column in df.select_dtypes(include=np.number).columns:
+        tokens=_column_tokens(str(column))
+        if not (tokens & {'percent', 'percentage', 'attendance', 'rate', 'pct'}):
+            continue
+        invalid=df[column].notna() & ~df[column].between(0, 100)
+        if invalid.any():
+            findings.append({'column':str(column),'invalid_count':int(invalid.sum()),'min':float(df.loc[invalid,column].min()),
+              'max':float(df.loc[invalid,column].max()),'rule':'Expected percentage-like values between 0 and 100; values were not changed.'})
+    return findings
+
 def select_columns_for_intent(name: str, clause: str, df: pd.DataFrame) -> tuple[list[str], str, list[str]]:
     """Select only type-compatible, evidence-backed columns for one intent."""
     clause_tokens = set(re.findall(r'[a-z0-9]+', normalize_text(clause)))
-    requested = [
-        c for c in df.columns
-        if str(c).lower() in normalize_text(clause)
-        or (_column_tokens(str(c)) & clause_tokens and not _is_identifier(str(c), df[c]))
-    ]
+    normalized_clause=normalize_text(clause)
+    requested=[]
+    for c in df.columns:
+        column_tokens=_column_tokens(str(c))
+        exact_name=bool(re.search(r'\b' + re.escape(str(c).lower()) + r'\b', normalized_clause))
+        semantic_alias=(
+            name == 'categorical' and bool(column_tokens & {'department','faculty','course','category','division'})
+            and bool(clause_tokens & {'department','faculty','course','category','division'})
+        )
+        operation_token_match=(
+            name in {'missing','outliers','scale','convert'} and bool(column_tokens & clause_tokens)
+            and not _is_identifier(str(c), df[c])
+        )
+        if exact_name or semantic_alias or operation_token_match:
+            requested.append(c)
     warnings: list[str] = []
     if requested:
         candidates = requested
@@ -91,9 +115,16 @@ def select_columns_for_intent(name: str, clause: str, df: pd.DataFrame) -> tuple
         candidates = [c for c in df.columns if df[c].isna().any()]
         reason = 'Selected columns with observed missing values.'
     elif name == 'categorical':
-        candidates = [c for c in df.columns if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c]) or isinstance(df[c].dtype, pd.CategoricalDtype)]
-        candidates = [c for c in candidates if df[c].astype(str).str.strip().ne(df[c].astype(str)).any()] or candidates
-        reason = 'Selected text/categorical columns; whitespace evidence is preferred.'
+        text_columns=[c for c in df.columns if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c]) or isinstance(df[c].dtype, pd.CategoricalDtype)]
+        inconsistent=[c for c in text_columns if df[c].astype(str).str.strip().ne(df[c].astype(str)).any()]
+        if len(inconsistent) == 1:
+            candidates=inconsistent; reason='Selected the only text column with observed whitespace inconsistency.'
+        elif len(inconsistent) > 1:
+            candidates=[]; reason='More than one text column has inconsistencies; select a target column before cleaning.'
+            warnings.append('Categorical target is ambiguous; no unrelated text column was selected.')
+        else:
+            candidates=[]; reason='No observed categorical inconsistency identifies a safe target.'
+            warnings.append('Categorical target is ambiguous without an explicit column name.')
     elif name == 'outliers':
         candidates = [c for c in df.select_dtypes(include=np.number).columns if not _is_identifier(str(c), df[c])]
         reason = 'Selected numeric measurement columns and excluded identifier-like columns.'
@@ -126,7 +157,7 @@ def parse_intent(text: str, columns: list[str], df: pd.DataFrame | None = None) 
         else:
             matched = [c for c in columns if c.lower() in normalize_text(prediction['clause'])]
             column_reason = 'Matched explicit column names in the operation clause.' if matched else 'No dataset profile was supplied.'
-        confidence = 'high' if prediction['similarity'] >= .45 else 'medium' if prediction['similarity'] >= .20 else 'rule-supported'
+        confidence = 'strong lexical match' if prediction['similarity'] >= .45 else 'weak lexical match' if prediction['similarity'] >= .20 else 'rule-supported fallback'
         found.append({'name':name, 'columns':matched, 'confidence':confidence, 'similarity':prediction['similarity'],
             'matched_example':prediction['matched_example'], 'clause':prediction['clause'], 'negated':prediction['negated'],
             'reason':f"{prediction['recognition']} matched '{prediction['matched_example']}'.", 'column_reason':column_reason})
@@ -190,6 +221,8 @@ def recommendations(df: pd.DataFrame) -> list[dict]:
     if whitespace: out.append({'name':'categorical','columns':whitespace,'reason':'Whitespace inconsistency detected in: '+', '.join(whitespace)+'.'})
     numeric=[str(c) for c in df.select_dtypes(include=np.number).columns if not _is_identifier(str(c), df[c])]
     if numeric: out.append({'name':'outliers','columns':numeric,'reason':'Numeric non-identifier columns are available for IQR outlier inspection.'})
+    for finding in percentage_range_violations(df):
+        out.append({'name':'range_validation','columns':[finding['column']],'reason':finding['rule'],'detection_only':True})
     return out
 
 def validate_operations(df: pd.DataFrame, operations: list[dict]) -> list[str]:

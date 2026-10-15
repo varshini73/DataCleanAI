@@ -1,5 +1,5 @@
 import pandas as pd
-from app.services import metrics, parse_intent, apply_operations, objective_recommendations, validate_operations
+from app.services import metrics, parse_intent, apply_operations, objective_recommendations, percentage_range_violations, select_columns_for_intent, validate_operations
 
 def test_metrics_and_missing_imputation():
     df=pd.DataFrame({'marks':[10,None,30],'kind':[' A ','B','B']})
@@ -58,3 +58,22 @@ def test_negated_duplicate_request_is_not_an_executable_removal():
     assert parsed['operations'][0]['name'] == 'duplicates'
     assert parsed['operations'][0]['negated'] is True
     assert objective_recommendations(parsed, df) == []
+
+def test_categorical_target_prefers_named_department_not_unrelated_name():
+    df=pd.DataFrame({'Name':[' Ada ','Ben'], 'Department':[' CS ','Math'], 'Marks':[10, 20]})
+    selected, reason, warnings=select_columns_for_intent('categorical','standardize department names',df)
+    assert selected == ['Department']
+    assert not warnings
+
+def test_ambiguous_categorical_evidence_requires_review():
+    df=pd.DataFrame({'Name':[' Ada ','Ben'], 'Department':[' CS ','Math']})
+    selected, reason, warnings=select_columns_for_intent('categorical','standardize values',df)
+    assert selected == []
+    assert any('ambiguous' in warning for warning in warnings)
+
+def test_percentage_range_validation_is_separate_from_outliers():
+    df=pd.DataFrame({'Attendance_Percent':[90, 101, -2], 'Marks':[1, 999, 2]})
+    findings=percentage_range_violations(df)
+    assert findings == [{'column':'Attendance_Percent','invalid_count':2,'min':-2.0,'max':101.0,
+      'rule':'Expected percentage-like values between 0 and 100; values were not changed.'}]
+    assert df['Attendance_Percent'].tolist() == [90,101,-2]
